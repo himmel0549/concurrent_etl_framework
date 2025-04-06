@@ -2,6 +2,8 @@ import os
 import concurrent.futures
 import time
 import traceback
+from abc import ABC, abstractmethod
+from typing import Tuple, Optional, Type
 
 import pandas as pd
 import numpy as np
@@ -10,8 +12,7 @@ from utils.logging import get_logger
 from core.interfaces import ETLProcessor
 from core.context import ETLContext
 from config.constants import log_lock
-from abc import ABC, abstractmethod
-from typing import Tuple, Optional, Type
+from utils.resource_manager import ResourceManager
 
 
 logger = get_logger(__name__)
@@ -140,7 +141,8 @@ class TransformProcessor(ETLProcessor[pd.DataFrame, pd.DataFrame]):
     負責數據的轉換和處理
     """
     def __init__(self, context: ETLContext = None, processing_factor: float = 0.002,
-                 strategy_class: Type[TransformStrategy] = None):
+                 strategy_class: Type[TransformStrategy] = None, 
+                 resource_manager: Type[ResourceManager] = None):
         """
         初始化轉換處理器
         
@@ -152,6 +154,7 @@ class TransformProcessor(ETLProcessor[pd.DataFrame, pd.DataFrame]):
         super().__init__(context)
         self.processing_factor = processing_factor
         self.strategy_class = strategy_class or DefaultSalesTransformStrategy
+        self.resource_manager = resource_manager or ResourceManager()
     
     def process(self, df_chunk: pd.DataFrame, **kwargs) -> pd.DataFrame:
         """
@@ -189,6 +192,19 @@ class TransformProcessor(ETLProcessor[pd.DataFrame, pd.DataFrame]):
                 logger.error(f"轉換數據時發生錯誤: {str(e)}")
             raise
     
+    def calculate_optimal_partitions(self, df):
+        """根據資料大小動態計算最佳分區數"""
+        memory_usage = df.memory_usage(deep=True).sum()
+        with log_lock:
+            logger.info(f"根據資料大小({memory_usage / (1024*1024):.2f}MB)動態調整分區數")
+        # 每個分區理想大小約50-100MB
+        ideal_partition_size = 75 * 1024 * 1024  # 75MB
+        optimal_count = max(1, int(memory_usage / ideal_partition_size))
+        
+        # 不超過CPU核心數且至少為1
+        cpu_count = os.cpu_count() or 4
+        return max(1, min(cpu_count, optimal_count))
+
     def process_concurrent(self, 
                            df: pd.DataFrame, 
                            num_partitions: int = None, 
@@ -215,11 +231,19 @@ class TransformProcessor(ETLProcessor[pd.DataFrame, pd.DataFrame]):
         with log_lock:
             logger.info("開始數據轉換")
         
-        # 確定分區數和工作進程數
+        # 確定分區數和工作進程數, 如果未提供則自動計算
         if num_partitions is None:
-            num_partitions = os.cpu_count() or 4
+            num_partitions = self.calculate_optimal_partitions(df)
+            with log_lock:
+                logger.info(f"自動設定最佳分區數: {num_partitions}")
         if max_workers is None:
-            max_workers = num_partitions
+            adaptive_workers = self.resource_manager.get_adaptive_workers(
+                task_type='cpu',  # 轉換是CPU密集型
+                min_workers=2,
+            )
+            max_workers = adaptive_workers
+            with log_lock:
+                logger.info(f"基於系統資源動態設定工作進程數: {max_workers}")
         
         # 從參數中獲取策略類別或使用默認策略
         strategy_class = kwargs.pop('strategy_class', self.strategy_class)
