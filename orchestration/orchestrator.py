@@ -1,8 +1,10 @@
 from typing import List, Dict, Any
 import time
+import os
 
 import pandas as pd
 import numpy as np
+import traceback
 
 from utils.logging import get_logger
 from core.enums import ProcessingMode
@@ -12,6 +14,7 @@ from processors.transform import TransformProcessor
 from processors.load import LoadProcessor
 from processors.output import OutputProcessor
 from config.constants import log_lock, file_lock
+from utils.resource_manager import ResourceManager
 
 
 logger = get_logger(__name__)
@@ -218,6 +221,60 @@ class ETLOrchestratorWithOutput(ETLOrchestrator):
         """
         super().__init__(context, extractor, transformer, loader)
         self.outputter = outputter or OutputProcessor(self.context)
+        self.resource_manager = ResourceManager()
+
+    def calculate_optimal_partitions(self, df):
+        """根據資料大小動態計算最佳分區數"""
+        memory_usage = df.memory_usage(deep=True).sum()
+        with log_lock:
+            logger.info(f"根據資料大小({memory_usage / (1024*1024):.2f}MB)動態調整分區數")
+        # 每個分區理想大小約50-100MB
+        ideal_partition_size = 75 * 1024 * 1024  # 75MB
+        optimal_count = max(1, int(memory_usage / ideal_partition_size))
+        
+        # 不超過CPU核心數且至少為1
+        cpu_count = os.cpu_count() or 4
+        return max(1, min(cpu_count, optimal_count))
+
+    def optimize_processing_parameters(self, df, processing_mode):
+        """根據資料和系統資源優化處理參數"""
+        if processing_mode != ProcessingMode.CONCURRENT:
+            return {}, {}, {}
+            
+        # 獲取資源狀況
+        resources = self.resource_manager.resources
+        
+        # 優化提取階段 (IO密集型)
+        extract_workers = self.resource_manager.get_adaptive_workers(
+            task_type='io', min_workers=2, max_workers=8
+        )
+        
+        # 優化轉換階段 (CPU密集型)
+        optimal_partitions = self.calculate_optimal_partitions(df)
+        transform_workers = self.resource_manager.get_adaptive_workers(
+            task_type='cpu', min_workers=2, max_workers=optimal_partitions
+        )
+        
+        # 優化載入階段 (IO密集型); 跟output共用
+        load_workers = self.resource_manager.get_adaptive_workers(
+            task_type='io', min_workers=1, max_workers=5
+        )
+        
+        with log_lock:
+            logger.info(f"系統資源狀態: 記憶體使用率 {resources['memory_used_percent']}%, "
+                        f"CPU使用率 {resources['average_cpu']}%")
+            logger.info(f"最佳參數設定: 提取工作線程數 {extract_workers}, "
+                        f"轉換分區數 {optimal_partitions}, 轉換工作進程數 {transform_workers}, "
+                        f"載入/輸出工作線程數 {load_workers}")
+        
+        return {
+            'max_workers': extract_workers
+        }, {
+            'num_partitions': optimal_partitions,
+            'max_workers': transform_workers
+        }, {
+            'max_workers': load_workers
+        }
     
     def run(self, 
             data_dir: str = 'data/raw', 
@@ -229,7 +286,8 @@ class ETLOrchestratorWithOutput(ETLOrchestrator):
             reports: List[Dict[str, Any]] = None,
             output_configs: List[Dict[str, Any]] = None,
             output_params: Dict[str, Any] = None,
-            skip_load: bool = False) -> bool:
+            skip_load: bool = False, 
+            enable_auto_optimization=True) -> bool:
         """
         執行完整的ETL流程，包括純輸出階段
         
@@ -283,6 +341,29 @@ class ETLOrchestratorWithOutput(ETLOrchestrator):
         transform_params = transform_params or {}
         load_params = load_params or {}
         output_params = output_params or {}
+
+        # 根據系統資源和資料情況自動優化參數
+        if enable_auto_optimization and processing_mode == ProcessingMode.CONCURRENT:
+            try:
+                # 取得資料大小來優化參數
+                import glob
+                first_file = glob.glob(f"{data_dir}/{file_pattern}")[0]
+                sample_df = self.extractor.process(first_file)
+                
+                opt_extract, opt_transform, opt_load = self.optimize_processing_parameters(
+                    sample_df, processing_mode
+                )
+                
+                # 合併自動優化參數與使用者提供的參數
+                extract_params = {**opt_extract, **(extract_params or {})}
+                transform_params = {**opt_transform, **(transform_params or {})}
+                load_params = {**opt_load, **(load_params or {})}
+                output_params = {**opt_load, **(output_params or {})}
+                
+            except Exception as e:
+                with log_lock:
+                    logger.error(f"自動優化處理參數失敗：{str(e)}")
+                    logger.error(f"堆疊追蹤：{traceback.format_exc()}")
         
         try:
             # 1. 提取階段
