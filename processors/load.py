@@ -19,7 +19,7 @@ class LoadProcessor(ETLProcessor[pd.DataFrame, Dict[str, bool]]):
     數據加載處理器
     負責將處理後的數據保存到目標位置
     """
-    def __init__(self, context: ETLContext = None, output_dir: str = 'data/final'):
+    def __init__(self, context: ETLContext = None, output_dir: str = 'data/final_aggregated'):
         """
         初始化加載處理器
         
@@ -101,9 +101,15 @@ class LoadProcessor(ETLProcessor[pd.DataFrame, Dict[str, bool]]):
                 # 儲存結果
                 if 'write_params' in kwargs:
                     # 自定義寫入參數
-                    agg_df.to_csv(filename, **kwargs['write_params'])
+                    if os.path.splitext(filename)[1] == '.xlsx':
+                        agg_df.to_excel(filename, **kwargs['write_params'])
+                    else:
+                        agg_df.to_csv(filename, **kwargs['write_params'])
                 else:
-                    agg_df.to_csv(filename, index=False)
+                    if os.path.splitext(filename)[1] == '.xlsx':
+                        agg_df.to_excel(filename, index=False)
+                    else:
+                        agg_df.to_csv(filename, index=False)
             
             with log_lock:
                 logger.info(f"完成處理維度: {dimension}, 記錄數: {len(agg_df)}")
