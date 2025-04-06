@@ -1,6 +1,7 @@
 import os
 import concurrent.futures
 import time
+import traceback
 
 import pandas as pd
 import numpy as np
@@ -117,7 +118,17 @@ def _transform_chunk_worker(chunk_data, chunk_index, strategy_class=None, proces
         
         return transformed_data, chunk_index, None  # 返回數據和索引
     except Exception as e:
-        return None, chunk_index, str(e)  # 返回錯誤信息
+        # 捕獲詳細的錯誤信息，包括完整的堆疊追蹤
+        error_info = {
+            'error_type': type(e).__name__,
+            'error_message': str(e),
+            'traceback': traceback.format_exc(),
+            'chunk_index': chunk_index,
+            'chunk_shape': chunk_data.shape if isinstance(chunk_data, pd.DataFrame) else None,
+            'chunk_columns': list(chunk_data.columns) if isinstance(chunk_data, pd.DataFrame) else None,
+            'strategy': strategy_class.__name__ if strategy_class else None
+        }
+        return None, chunk_index, error_info  # 返回詳細錯誤信息
 
 
 # Transform 階段處理器
@@ -234,21 +245,29 @@ class TransformProcessor(ETLProcessor[pd.DataFrame, pd.DataFrame]):
             for future in concurrent.futures.as_completed(future_to_chunk):
                 chunk_idx = future_to_chunk[future]
                 try:
-                    chunk_result, idx, error = future.result()
-                    if error is None:
+                    chunk_result, idx, error_info = future.result()
+                    if error_info is None:
                         results.append(chunk_result)
                         with log_lock:
                             logger.info(f"完成分區 {idx+1}/{num_partitions} 的轉換")
                     else:
                         with log_lock:
-                            logger.error(f"處理分區 {idx+1} 時出錯: {error}")
+                            logger.error(f"處理分區 {idx+1}/{num_partitions} 時出錯:")
+                            logger.error(f"錯誤類型: {error_info['error_type']}")
+                            logger.error(f"錯誤訊息: {error_info['error_message']}")
+                            logger.error(f"堆疊追蹤:\n{error_info['traceback']}")
+                            if 'chunk_shape' in error_info and error_info['chunk_shape']:
+                                logger.error(f"分區資料形狀: {error_info['chunk_shape']}")
+                            if 'chunk_columns' in error_info and error_info['chunk_columns']:
+                                logger.error(f"分區資料欄位: {error_info['chunk_columns']}")
+                        
                         # 記錄錯誤但在主進程中處理
                         if self.context and hasattr(self.context, 'stats'):
-                            error_type = error.split(':')[0] if ':' in error else 'UnknownError'
-                            self.context.stats.record_error(error_type)
+                            self.context.stats.record_error(error_info['error_type'])
                 except Exception as e:
                     with log_lock:
-                        logger.error(f"處理分區 {chunk_idx+1} 時出錯: {str(e)}", exc_info=True)
+                        logger.error(f"處理分區 {chunk_idx+1}/{num_partitions} 時出錯: {str(e)}")
+                        logger.error(f"堆疊追蹤:\n{traceback.format_exc()}")
         
         # 合併轉換後的結果
         if results:
