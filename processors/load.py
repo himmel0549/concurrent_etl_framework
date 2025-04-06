@@ -49,39 +49,8 @@ class LoadProcessor(ETLProcessor[pd.DataFrame, Dict[str, bool]]):
                 logger.info(f"開始處理維度: {dimension}")
             
             # 根據維度選擇分析方式
-            if dimension == 'store':
-                # 按門市匯總
-                agg_df = df.groupby(['store_id', 'store_name', 'region', 'year', 'month']).agg({
-                    'revenue': 'sum',
-                    'quantity': 'sum',
-                    'profit': 'sum',
-                    'discount_amount': 'sum',
-                    'transaction_id': 'nunique'  # 交易次數
-                }).reset_index()
-                agg_df.rename(columns={'transaction_id': 'transaction_count'}, inplace=True)
-                
-            elif dimension == 'product':
-                # 按產品匯總
-                agg_df = df.groupby(['product_id', 'product_name', 'category', 'year', 'month']).agg({
-                    'revenue': 'sum',
-                    'quantity': 'sum',
-                    'profit': 'sum',
-                    'discount_amount': 'sum'
-                }).reset_index()
-            
-            elif dimension == 'date':
-                # 按日期匯總
-                agg_df = df.groupby(['year', 'month', 'day', 'weekday']).agg({
-                    'revenue': 'sum',
-                    'quantity': 'sum',
-                    'profit': 'sum',
-                    'discount_amount': 'sum',
-                    'transaction_id': 'nunique'  # 交易次數
-                }).reset_index()
-                agg_df.rename(columns={'transaction_id': 'transaction_count'}, inplace=True)
-            
             # 允許自定義維度
-            elif 'groupby_cols' in kwargs and 'agg_dict' in kwargs:
+            if 'groupby_cols' in kwargs and 'agg_dict' in kwargs:
                 groupby_cols = kwargs['groupby_cols']
                 agg_dict = kwargs['agg_dict']
                 agg_df = df.groupby(groupby_cols).agg(agg_dict).reset_index()

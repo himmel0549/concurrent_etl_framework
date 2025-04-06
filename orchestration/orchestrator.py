@@ -1,4 +1,4 @@
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Union
 import time
 import os
 
@@ -278,7 +278,7 @@ class ETLOrchestratorWithOutput(ETLOrchestrator):
     
     def run(self, 
             data_dir: str = 'data/raw', 
-            file_pattern: str = 'sales_*.csv',
+            file_pattern: Union[str, List[str]] = 'sales_*.csv',
             processing_mode: ProcessingMode = ProcessingMode.CONCURRENT,
             extract_params: Dict[str, Any] = None,
             transform_params: Dict[str, Any] = None,
@@ -287,6 +287,8 @@ class ETLOrchestratorWithOutput(ETLOrchestrator):
             output_configs: List[Dict[str, Any]] = None,
             output_params: Dict[str, Any] = None,
             skip_load: bool = False, 
+            skip_transform: bool = False,
+            skip_output: bool = False,
             enable_auto_optimization=True) -> bool:
         """
         執行完整的ETL流程，包括純輸出階段
@@ -301,7 +303,9 @@ class ETLOrchestratorWithOutput(ETLOrchestrator):
             reports: 報表配置
             output_configs: 輸出配置列表，用於純輸出階段
             output_params: 輸出階段參數
-            skip_load: 是否跳過加載階段，直接進行輸出
+            skip_load: 是否跳過加載階段，直接進行聚合輸出
+            skip_transform: 是否跳過轉換階段
+            skip_output: 是否跳過輸出階段
         
         返回:
             ETL流程是否成功
@@ -345,10 +349,14 @@ class ETLOrchestratorWithOutput(ETLOrchestrator):
         # 根據系統資源和資料情況自動優化參數
         if enable_auto_optimization and processing_mode == ProcessingMode.CONCURRENT:
             try:
-                # 取得資料大小來優化參數
-                import glob
-                first_file = glob.glob(f"{data_dir}/{file_pattern}")[0]
-                sample_df = self.extractor.process(first_file)
+                if isinstance(file_pattern, str):
+                    # 取得資料大小來優化參數
+                    import glob
+                    first_file: List[str] = glob.glob(f"{data_dir}/{file_pattern}")[0]
+                    sample_df = self.extractor.process(first_file)
+                else:
+                    # 取得資料大小來優化參數
+                    sample_df = self.extractor.process(file_pattern[0])
                 
                 opt_extract, opt_transform, opt_load = self.optimize_processing_parameters(
                     sample_df, processing_mode
@@ -370,9 +378,14 @@ class ETLOrchestratorWithOutput(ETLOrchestrator):
             with log_lock:
                 logger.info("=== 提取階段開始 ===")
             
-            # 獲取所有銷售數據文件
-            import glob
-            file_paths = glob.glob(f"{data_dir}/{file_pattern}")
+            if isinstance(file_pattern, str):
+                # 獲取所有文件
+                import glob
+                file_paths: List[str] = glob.glob(f"{data_dir}/{file_pattern}")
+            elif isinstance(file_pattern, list):
+                file_paths: List[str] = file_pattern
+            else:
+                raise ValueError("file_pattern 必須是字串或字串列表")
             
             if processing_mode == ProcessingMode.CONCURRENT:
                 extracted_data = self.extractor.process_concurrent(file_paths, **extract_params)
@@ -394,39 +407,34 @@ class ETLOrchestratorWithOutput(ETLOrchestrator):
                 return False
             
             # 2. 轉換階段
-            with log_lock:
-                logger.info("=== 轉換階段開始 ===")
-            
-            if processing_mode == ProcessingMode.CONCURRENT:
-                transformed_data = self.transformer.process_concurrent(extracted_data, **transform_params)
-            else:
-                # 串行處理 - 但仍分塊處理以保持一致性
-                import numpy as np
-                num_partitions = transform_params.get('num_partitions', 4)
-                df_split = np.array_split(extracted_data, num_partitions)
-                
-                transformed_chunks = []
-                for i, chunk in enumerate(df_split):
-                    with log_lock:
-                        logger.info(f"處理分區 {i+1}/{num_partitions}")
-                    transformed_chunk = self.transformer.process(chunk, **transform_params)
-                    transformed_chunks.append(transformed_chunk)
-                
-                if transformed_chunks:
-                    transformed_data = pd.concat(transformed_chunks, ignore_index=True)
-                else:
-                    transformed_data = pd.DataFrame()
-            
-            if len(transformed_data) == 0:
+            if not skip_transform:
                 with log_lock:
-                    logger.error("轉換階段失敗，終止ETL流程")
-                return False
-            
-            # 保存轉換後的數據
-            if 'save_transformed' in transform_params and transform_params['save_transformed']:
-                save_path = transform_params.get('transformed_path', 'data/processed/all_sales_transformed.csv')
-                with file_lock:
-                    transformed_data.to_csv(save_path, index=False)
+                    logger.info("=== 轉換階段開始 ===")
+                
+                if processing_mode == ProcessingMode.CONCURRENT:
+                    transformed_data = self.transformer.process_concurrent(extracted_data, **transform_params)
+                else:
+                    # 串行處理 - 但仍分塊處理以保持一致性
+                    import numpy as np
+                    num_partitions = transform_params.get('num_partitions', 4)
+                    df_split = np.array_split(extracted_data, num_partitions)
+                    
+                    transformed_chunks = []
+                    for i, chunk in enumerate(df_split):
+                        with log_lock:
+                            logger.info(f"處理分區 {i+1}/{num_partitions}")
+                        transformed_chunk = self.transformer.process(chunk, **transform_params)
+                        transformed_chunks.append(transformed_chunk)
+                    
+                    if transformed_chunks:
+                        transformed_data = pd.concat(transformed_chunks, ignore_index=True)
+                    else:
+                        transformed_data = pd.DataFrame()
+                
+                if len(transformed_data) == 0:
+                    with log_lock:
+                        logger.error("轉換階段失敗，終止ETL流程")
+                    return False
             
             # 3. 載入階段 (可跳過)
             load_success = True
@@ -460,33 +468,34 @@ class ETLOrchestratorWithOutput(ETLOrchestrator):
             
             # 4. 輸出階段 (純輸出，無聚合邏輯)
             output_success = True
-            if output_configs:
-                with log_lock:
-                    logger.info("=== 輸出階段開始 ===")
-                
-                if processing_mode == ProcessingMode.CONCURRENT:
-                    output_results = self.outputter.process_concurrent(
-                        transformed_data, 
-                        output_configs, 
-                        **output_params
-                    )
-                    output_success = any(output_results.values())
-                else:
-                    # 串行處理
-                    output_results = {}
-                    for config in output_configs:
-                        result = self.outputter.process(
-                            transformed_data,
-                            config,
+            if not skip_output and output_configs:
+                if output_configs:
+                    with log_lock:
+                        logger.info("=== 輸出階段開始 ===")
+                    
+                    if processing_mode == ProcessingMode.CONCURRENT:
+                        output_results = self.outputter.process_concurrent(
+                            transformed_data, 
+                            output_configs, 
                             **output_params
                         )
-                        output_results[config.get('filename', 'unknown')] = result
+                        output_success = any(output_results.values())
+                    else:
+                        # 串行處理
+                        output_results = {}
+                        for config in output_configs:
+                            result = self.outputter.process(
+                                transformed_data,
+                                config,
+                                **output_params
+                            )
+                            output_results[config.get('filename', 'unknown')] = result
+                        
+                        output_success = any(output_results.values())
                     
-                    output_success = any(output_results.values())
-                
-                if not output_success:
-                    with log_lock:
-                        logger.error("輸出階段失敗")
+                    if not output_success:
+                        with log_lock:
+                            logger.error("輸出階段失敗")
             
             total_time = time.time() - total_start_time
             with log_lock:
