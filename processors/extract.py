@@ -5,6 +5,7 @@ import time
 import pandas as pd
 
 from utils.logging import get_logger
+from utils.file_utils import detect_file_format
 from core.interfaces import ETLProcessor
 from core.context import ETLContext
 from config.constants import log_lock, file_lock
@@ -29,23 +30,32 @@ class ExtractProcessor(ETLProcessor[str, pd.DataFrame]):
         super().__init__(context)
         self.processing_factor = processing_factor
     
-    def process(self, file_path: str, **kwargs) -> pd.DataFrame:
+    def process(self, file_info: str, **kwargs) -> pd.DataFrame:
         """
         處理單個文件的提取
         
         參數:
-            file_path: 文件路徑
-            **kwargs: 傳遞給 pd.read_csv 的額外參數
+            file_info: 可以是字串路徑或包含路徑和格式資訊的字典
+            **kwargs: 傳遞給 pd.read_xxx 的額外參數
         
         返回:
             提取的DataFrame
         """
         try:
+            if isinstance(file_info, str):
+                file_path = file_info
+            else:
+                file_path = file_info['path']
             with log_lock:
                 logger.info(f"開始讀取文件: {file_path}")
             
-            # 使用傳入的參數讀取CSV
-            df = pd.read_csv(file_path, **kwargs)
+            # 使用檔案格式檢測函數
+            format_info = detect_file_format(file_path)
+            reader_func = format_info['reader']
+            reader_params = {**format_info['params'], **kwargs}
+            
+            # 使用適當的讀取函數
+            df = reader_func(file_path, **reader_params)
             
             # 模擬與數據量成正比的處理時間
             rows = len(df)

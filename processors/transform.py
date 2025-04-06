@@ -92,7 +92,9 @@ class AccountingTransformStrategy(TransformStrategy):
             ).reset_index()
             balance_check.columns = ['voucher_id', 'is_balanced']
             df = pd.merge(df, balance_check, on='voucher_id', how='left')
-        
+
+        # 5. Entity類型標籤
+        df['company'] = df['voucher_id'].str[0]
         return df
 
 
