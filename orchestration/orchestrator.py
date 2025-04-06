@@ -387,6 +387,8 @@ class ETLOrchestratorWithOutput(ETLOrchestrator):
             else:
                 raise ValueError("file_pattern 必須是字串或字串列表")
             
+            transformed_data = None
+            
             if processing_mode == ProcessingMode.CONCURRENT:
                 extracted_data = self.extractor.process_concurrent(file_paths, **extract_params)
             else:
@@ -468,6 +470,10 @@ class ETLOrchestratorWithOutput(ETLOrchestrator):
             
             # 4. 輸出階段 (純輸出，無聚合邏輯)
             output_success = True
+            if isinstance(transformed_data, pd.DataFrame):
+                pass
+            else:
+                transformed_data = extracted_data
             if not skip_output and output_configs:
                 if output_configs:
                     with log_lock:

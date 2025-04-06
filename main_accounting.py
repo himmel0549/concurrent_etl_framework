@@ -1,3 +1,4 @@
+# 使用指南-會計版本
 # main_accounting.py
 import os
 import sys
@@ -13,6 +14,7 @@ from processors.load import LoadProcessor
 from processors.output import OutputProcessor
 from orchestration.orchestrator import ETLOrchestratorWithOutput
 from generators.accounting_data import AccountingDataGenerator
+from utils.resource_manager import ResourceManager
 
 # 設置日誌
 setup_logging()
@@ -27,12 +29,17 @@ def main():
     # logger.info("開始生成會計測試資料...")
     # data_gen = AccountingDataGenerator()
     # data_gen.generate(months=3, transactions_per_day=20)
+
+    # 創建資源管理器
+    resource_manager = ResourceManager()
+    resource_manager.start_monitoring()
     
     # 2. 創建ETL組件
     context = ETLContext()
     extractor = ExtractProcessor(context, processing_factor=0)  # 實際應用中不延遲
     transformer = TransformProcessor(context, processing_factor=0, 
-                                     strategy_class=AccountingTransformStrategy)  # 實際應用中不延遲
+                                     strategy_class=AccountingTransformStrategy, 
+                                     resource_manager=resource_manager)  # 實際應用中不延遲
     loader = LoadProcessor(context, output_dir='data/accounting/reports')
     outputter = OutputProcessor(context, output_dir='data/accounting/processed')
     
@@ -60,8 +67,8 @@ def main():
     from accounting_logics import accounting_transform
     
     transform_params = {
-        'num_partitions': 4,
-        'max_workers': 4,
+        'num_partitions': 4,  # 分區數量，預設根據數據量調整
+        'max_workers': 4,     # 並行線程，預設根據系統負載調整
         'custom_transform': accounting_transform
     }
     
@@ -153,21 +160,27 @@ def main():
     success = orchestrator.run(
         data_dir='data/accounting/raw',
         # file_pattern='entries_*.xlsx',  # 只處理會計分錄文件
-        file_pattern='vouchers_*.xlsx',  # 只處理傳票文件
+        # file_pattern='vouchers_*.xlsx',  # 只處理傳票文件
+        file_pattern=['data/accounting/raw/vouchers_A.xlsx', 'data/accounting/raw/vouchers_B.xlsx'],
         processing_mode=ProcessingMode.CONCURRENT,
+        # processing_mode=ProcessingMode.SEQUENTIAL,
         extract_params=extract_params,
         transform_params=transform_params,
-        # skip_load=True,
+        skip_load=True,
         load_params=load_params,
         reports=accounting_reports,
-        output_configs=output_configs,
-        output_params=output_params
+        # output_configs=output_configs,
+        # output_params=output_params,
+        enable_auto_optimization=False
     )
     
     if success:
         logger.info("會計ETL流程成功完成!")
     else:
         logger.error("會計ETL流程執行失敗!")
+
+    # 資源清理
+    resource_manager.stop_monitoring()
 
 if __name__ == "__main__":
     main()

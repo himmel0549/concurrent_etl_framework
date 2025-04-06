@@ -1,3 +1,4 @@
+# 使用指南-銷售版本
 # main.py
 import os
 import sys
@@ -27,7 +28,8 @@ from core import ETLContext, ProcessingMode
 from processors.extract import ExtractProcessor
 from processors.transform import TransformProcessor
 from processors.load import LoadProcessor
-from orchestration.orchestrator import ETLOrchestrator
+from orchestration.orchestrator import ETLOrchestrator, ETLOrchestratorWithOutput
+from processors.output import OutputProcessor
 from orchestration.performance import PerformanceComparator
 from generators.sales import SalesDataGenerator
 
@@ -43,8 +45,8 @@ def main():
     os.makedirs('data/final', exist_ok=True)
     
     # 生成測試數據
-    data_gen = SalesDataGenerator()
-    data_gen.generate(days=90)
+    # data_gen = SalesDataGenerator()
+    # data_gen.generate(days=90)
     
     # 創建ETL協調器和處理器
     context = ETLContext()
@@ -54,11 +56,12 @@ def main():
         return
     else:
         logger.info("ETLContext.stats 正確初始化")
-    orchestrator = ETLOrchestrator(
+    orchestrator = ETLOrchestratorWithOutput(
         context=context,
         extractor=ExtractProcessor(context),
         transformer=TransformProcessor(context),
-        loader=LoadProcessor(context)
+        loader=LoadProcessor(context),
+        outputter=OutputProcessor(context, output_dir='data/outputs')
     )
 
     extract_params = {'max_workers': 5}
@@ -70,12 +73,12 @@ def main():
     load_params = {'max_workers': 3}
     
     # 執行ETL流程
-    orchestrator.run(
-        processing_mode=ProcessingMode.CONCURRENT,
-        extract_params=extract_params,
-        transform_params=transform_params,
-        load_params=load_params
-    )
+    # orchestrator.run(
+    #     processing_mode=ProcessingMode.CONCURRENT,
+    #     extract_params=extract_params,
+    #     transform_params=transform_params,
+    #     load_params=load_params
+    # )
     
     # 比較性能
     # comparator = PerformanceComparator(orchestrator)
@@ -89,5 +92,76 @@ def main():
     # ConcurrencyExamples.cancel_example()
     # ConcurrencyExamples.timeout_example()
     # ConcurrencyExamples.callback_example()
+
+    # 定義純輸出配置
+    output_configs = [
+        {'filename': 'data/outputs/full_data.csv'},
+        {'filename': 'data/outputs/full_data.xlsx'},
+        {'filename': 'data/outputs/full_data.parquet', 'params': {'compression': 'snappy'}}
+    ]
+    output_params = {'max_workers': 3}
+
+    # 定義報表配置
+    reports = [
+        # 按門市彙總報表
+        {
+            'dimension': 'store', 
+            'filename': 'data/final/store_monthly.csv',
+            'params': {
+                'groupby_cols': ['store_id', 'region', 'year', 'month'],
+                'agg_dict': {
+                    'revenue': 'sum',
+                    'quantity': 'sum',
+                    'profit': 'sum'
+                },
+                'post_process': add_kpi_metrics  # 增加KPI指標
+            }
+        },
+        # 按商品彙總報表
+        {
+            'dimension': 'product',
+            'filename': 'data/final/product_report.xlsx',
+            'params': {
+                'groupby_cols': ['product_id', 'category', 'year', 'month'],
+                'agg_dict': {
+                    'revenue': 'sum',
+                    'profit_margin': 'mean'
+                },
+                'write_params': {
+                    'sheet_name': '產品業績'
+                }
+            }
+        },
+        # 自定義維度報表
+        {
+            'dimension': 'custom',
+            'filename': 'data/final/custom_report.csv',
+            'params': {
+                'groupby_cols': ['region', 'category', 'year', 'month'],
+                'agg_dict': {'revenue': 'sum', 'profit': 'sum'}
+            }
+        }
+    ]
+
+    # 執行帶有輸出階段的ETL流程
+    success = orchestrator.run(
+        processing_mode=ProcessingMode.CONCURRENT,
+        extract_params=extract_params,
+        transform_params=transform_params,
+        load_params=load_params,
+        reports=accounting_reports,
+        output_configs=output_configs,
+        output_params=output_params
+    )
+
+    # 或者只執行提取、轉換和輸出，跳過標準載入階段
+    # output_only = orchestrator.run(
+    #     processing_mode=ProcessingMode.CONCURRENT,
+    #     extract_params=extract_params,
+    #     transform_params=transform_params,
+    #     skip_load=True,
+    #     output_configs=output_configs,
+    #     output_params=output_params
+    # )
 if __name__ == "__main__":
     main()
