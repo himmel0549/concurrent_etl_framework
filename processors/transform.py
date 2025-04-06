@@ -13,6 +13,41 @@ from config.constants import log_lock
 
 logger = get_logger(__name__)
 
+# 定義一個模組級別的處理函數，用於多進程處理
+def _transform_chunk_worker(chunk_data, chunk_index, processing_factor=0.002, **process_kwargs):
+    """獨立的數據轉換函數，可被多進程調用"""
+    try:
+        # 模擬與數據量成正比的處理時間
+        processing_time = len(chunk_data) * processing_factor
+        time.sleep(processing_time)
+        
+        # 1. 新增日期欄位
+        chunk_data['year'] = pd.to_datetime(chunk_data['date']).dt.year
+        chunk_data['month'] = pd.to_datetime(chunk_data['date']).dt.month
+        chunk_data['day'] = pd.to_datetime(chunk_data['date']).dt.day
+        chunk_data['weekday'] = pd.to_datetime(chunk_data['date']).dt.weekday
+        
+        # 2. 計算業務指標
+        chunk_data['revenue'] = chunk_data['total_price']
+        chunk_data['discount_amount'] = chunk_data['quantity'] * chunk_data['unit_price'] * chunk_data['discount']
+        chunk_data['profit_margin'] = np.random.uniform(0.15, 0.45, size=len(chunk_data))
+        chunk_data['profit'] = chunk_data['revenue'] * chunk_data['profit_margin']
+        
+        # 3. 分類標籤
+        price_bins = process_kwargs.get('price_bins', [0, 1000, 5000, 10000, 50000, float('inf')])
+        price_labels = process_kwargs.get('price_labels', ['極低', '低', '中', '高', '極高'])
+        chunk_data['price_category'] = pd.cut(chunk_data['unit_price'], bins=price_bins, labels=price_labels)
+        
+        # 4. 應用自定義轉換函數
+        custom_transform = process_kwargs.get('custom_transform')
+        if custom_transform and callable(custom_transform):
+            chunk_data = custom_transform(chunk_data)
+        
+        return chunk_data, chunk_index, None  # 返回數據和索引
+    except Exception as e:
+        return None, chunk_index, str(e)  # 返回錯誤信息
+
+
 # Transform 階段處理器
 class TransformProcessor(ETLProcessor[pd.DataFrame, pd.DataFrame]):
     """
@@ -42,36 +77,22 @@ class TransformProcessor(ETLProcessor[pd.DataFrame, pd.DataFrame]):
             轉換後的DataFrame
         """
         try:
-            # 模擬與數據量成正比的處理時間
-            processing_time = len(df_chunk) * self.processing_factor
-            time.sleep(processing_time)
+            # 使用全局函數處理，代碼重用
+            result, _, error = _transform_chunk_worker(
+                df_chunk, 
+                0,  # 只是一個佔位符索引
+                self.processing_factor, 
+                **kwargs
+            )
             
-            # 1. 新增日期欄位
-            df_chunk['year'] = pd.to_datetime(df_chunk['date']).dt.year
-            df_chunk['month'] = pd.to_datetime(df_chunk['date']).dt.month
-            df_chunk['day'] = pd.to_datetime(df_chunk['date']).dt.day
-            df_chunk['weekday'] = pd.to_datetime(df_chunk['date']).dt.weekday
-            
-            # 2. 計算業務指標
-            df_chunk['revenue'] = df_chunk['total_price']
-            df_chunk['discount_amount'] = df_chunk['quantity'] * df_chunk['unit_price'] * df_chunk['discount']
-            df_chunk['profit_margin'] = np.random.uniform(0.15, 0.45, size=len(df_chunk))  # 模擬利潤率
-            df_chunk['profit'] = df_chunk['revenue'] * df_chunk['profit_margin']
-            
-            # 3. 分類標籤 - 允許自定義區間
-            price_bins = kwargs.get('price_bins', [0, 1000, 5000, 10000, 50000, float('inf')])
-            price_labels = kwargs.get('price_labels', ['極低', '低', '中', '高', '極高'])
-            df_chunk['price_category'] = pd.cut(df_chunk['unit_price'], bins=price_bins, labels=price_labels)
-            
-            # 4. 應用自定義轉換函數
-            custom_transform = kwargs.get('custom_transform')
-            if custom_transform and callable(custom_transform):
-                df_chunk = custom_transform(df_chunk)
-            
-            return df_chunk
+            if error:
+                raise Exception(error)
+                
+            return result
         except Exception as e:
             error_type = type(e).__name__
-            self.context.stats.record_error(error_type)
+            if self.context and hasattr(self.context, 'stats'):
+                self.context.stats.record_error(error_type)
             with log_lock:
                 logger.error(f"轉換數據時發生錯誤: {str(e)}")
             raise
@@ -113,9 +134,15 @@ class TransformProcessor(ETLProcessor[pd.DataFrame, pd.DataFrame]):
         
         # 使用ProcessPoolExecutor處理轉換（計算密集型操作適合多進程）
         with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
-            # 提交所有分區處理任務
+            # 提交所有分區處理任務，向模組級處理函數傳遞參數
             future_to_chunk = {
-                executor.submit(self.process, chunk, **kwargs): i 
+                executor.submit(
+                    _transform_chunk_worker, 
+                    chunk, 
+                    i, 
+                    self.processing_factor, 
+                    **kwargs
+                ): i 
                 for i, chunk in enumerate(df_split)
             }
             
@@ -124,10 +151,18 @@ class TransformProcessor(ETLProcessor[pd.DataFrame, pd.DataFrame]):
             for future in concurrent.futures.as_completed(future_to_chunk):
                 chunk_idx = future_to_chunk[future]
                 try:
-                    result = future.result()
-                    results.append(result)
-                    with log_lock:
-                        logger.info(f"完成分區 {chunk_idx+1}/{num_partitions} 的轉換")
+                    chunk_result, idx, error = future.result()
+                    if error is None:
+                        results.append(chunk_result)
+                        with log_lock:
+                            logger.info(f"完成分區 {idx+1}/{num_partitions} 的轉換")
+                    else:
+                        with log_lock:
+                            logger.error(f"處理分區 {idx+1} 時出錯: {error}")
+                        # 記錄錯誤但在主進程中處理
+                        if self.context and hasattr(self.context, 'stats'):
+                            error_type = error.split(':')[0] if ':' in error else 'UnknownError'
+                            self.context.stats.record_error(error_type)
                 except Exception as e:
                     with log_lock:
                         logger.error(f"處理分區 {chunk_idx+1} 時出錯: {str(e)}")
