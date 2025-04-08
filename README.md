@@ -3,17 +3,18 @@
 [![Python版本](https://img.shields.io/badge/python-3.8%2B-blue)]()
 [![授權](https://img.shields.io/badge/license-MIT-green)]()
 
-高效能、可擴展的ETL（Extract-Transform-Load）併發處理框架，專為處理會計底稿和數據分析而設計。透過並行處理技術，大幅提升數據處理效能，同時保持代碼清晰和可維護性。
+高效能、可擴展的ETL（Extract-Transform-Load）併發處理框架，專為處理會計底稿和數據分析而設計。利用多線程和多進程技術，大幅提升數據處理效能，同時保持代碼清晰和可維護性。
 
 ## ✨ 特色功能
 
-- **高效併發處理**：利用多線程和多進程技術，實現I/O和CPU密集型任務的最佳性能
-- **自適應資源優化**：基於數據大小和系統資源動態調整處理參數
-- **靈活的處理策略**：支持可切換的轉換邏輯，適配不同業務場景
+- **高效併發處理**：針對I/O和CPU密集型任務分別採用多線程和多進程，實現最佳性能
+- **自適應資源優化**：基於數據大小和系統資源動態調整並發參數
+- **增強錯誤恢復**：完整的錯誤追蹤與異常處理，確保ETL流程穩定性
+- **線程與進程安全**：細粒度鎖機制和線程本地存儲保證併發安全
+- **高級日誌系統**：非阻塞式日誌處理和自動堆疊追蹤功能
+- **靈活的處理策略**：可切換的轉換邏輯，支持不同業務場景
 - **多格式輸出支持**：內建支持CSV、Excel、Parquet等多種數據格式
-- **完整的ETL流程**：從數據提取、轉換到聚合報表生成，一站式解決方案
-- **穩健的錯誤處理**：完善的錯誤捕獲與日誌記錄機制
-- **全面的性能監控**：自動收集處理性能統計，支持性能比較分析
+- **全面的性能監控**：自動收集資源使用與處理性能統計
 
 ## 🛠️ 安裝與依賴
 
@@ -33,10 +34,9 @@ git clone https://github.com/yourusername/etl-concurrent-framework.git
 cd etl-concurrent-framework
 ```
 
-2. 使用pipenv設置環境（推薦）
+2. 安裝依賴套件
 ```bash
-pipenv install
-pipenv shell
+pip install -r requirements.txt
 ```
 
 ## 📋 快速開始
@@ -49,11 +49,19 @@ from processors.extract import ExtractProcessor
 from processors.transform import TransformProcessor
 from processors.load import LoadProcessor
 from orchestration.orchestrator import ETLOrchestratorWithOutput
+from utils.resource_manager import ResourceManager
 
-# 初始化上下文和處理器
+# 初始化資源管理器
+resource_manager = ResourceManager()
+resource_manager.start_monitoring()
+
+# 初始化上下文與處理器
 context = ETLContext()
 extractor = ExtractProcessor(context) 
-transformer = TransformProcessor(context)
+transformer = TransformProcessor(
+    context=context,
+    resource_manager=resource_manager
+)
 loader = LoadProcessor(context)
 
 # 創建協調器
@@ -75,10 +83,24 @@ success = orchestrator.run(
     reports=[  # 報表配置
         {
             'dimension': 'account_balance',
-            'filename': 'data/reports/balance_sheet.xlsx'
+            'filename': 'data/reports/balance_sheet.xlsx',
+            'params': {
+                'groupby_cols': ['company', 'year', 'month', 'account_code'],
+                'agg_dict': {
+                    'debit_amount': 'sum',
+                    'credit_amount': 'sum'
+                },
+                'post_process': lambda df: df.assign(
+                    balance=df['debit_amount'] - df['credit_amount']
+                )
+            }
         }
-    ]
+    ],
+    enable_auto_optimization=True  # 啟用自動優化
 )
+
+# 清理資源
+resource_manager.stop_monitoring()
 ```
 
 ### 併發模式選項
@@ -97,25 +119,15 @@ orchestrator.run(
 )
 ```
 
-### 使用自動優化
-
-```python
-# 啟用自動參數優化（根據數據量和系統資源）
-orchestrator.run(
-    # 其他參數...
-    enable_auto_optimization=True
-)
-```
-
 ## 🏗️ 框架架構
 
 ### 核心組件
 
 - **ETLContext**: 管理共享資源和狀態的上下文
-- **ExtractProcessor**: 負責從各種來源讀取數據
-- **TransformProcessor**: 負責數據轉換和處理
-- **LoadProcessor**: 負責聚合和報表生成
-- **OutputProcessor**: 負責數據輸出（無聚合邏輯）
+- **ExtractProcessor**: 負責從各種來源讀取數據（使用多線程）
+- **TransformProcessor**: 負責數據轉換和處理（使用多進程）
+- **LoadProcessor**: 負責聚合和報表生成（使用多線程）
+- **OutputProcessor**: 負責數據輸出（無聚合邏輯，使用多線程）
 - **ETLOrchestrator**: 協調整個ETL流程的執行
 - **ResourceManager**: 監控系統資源和優化處理參數
 
@@ -141,9 +153,42 @@ transformer = TransformProcessor(
 )
 ```
 
+## 🧠 並發安全與錯誤處理
+
+### 併發安全機制
+
+框架採用多層次的併發安全機制:
+
+```python
+# 文件鎖 - 防止文件競爭
+with file_lock_manager.get_lock(filename):
+    df.to_excel(filename, **params)
+
+# 統計信息更新鎖 - 保護共享狀態
+with self._stats_lock:
+    self.context.stats.file_processed(file_path, rows)
+
+# 線程本地存儲 - 隔離線程數據
+_thread_local.current_task = {'config': output_config}
+```
+
+### 錯誤恢復機制
+
+完整的錯誤捕獲與記錄:
+
+```python
+try:
+    # 處理代碼
+except Exception as e:
+    logger.error(f"處理失敗: {str(e)}")
+    logger.error(f"堆疊追蹤:\n{traceback.format_exc()}")
+    # 更新錯誤統計
+    self.context.stats.record_error(type(e).__name__)
+```
+
 ## 🔧 進階用法
 
-### 定制輸出格式
+### 多格式輸出配置
 
 ```python
 # 定義多種輸出格式
@@ -208,7 +253,7 @@ reports = [
 ]
 ```
 
-### 跳過特定階段
+### 選擇性處理階段
 
 ```python
 # 跳過載入階段，只執行提取、轉換和輸出
@@ -313,35 +358,109 @@ orchestrator.run(
 )
 ```
 
-### 各種使用情境
+## 📈 實用範例情境
 
 框架支持多種使用情境：
 
-1. **單純檔案讀取**：快速並行讀取多個文件並合併
-2. **檔案讀取與輸出**：讀取後直接以多種格式輸出
-3. **數據清洗與轉換**：讀取後進行數據處理
-4. **完整ETL流程**：包括讀取、轉換、報表生成和格式輸出的完整流程
+### 情境1: 單純讀取文件
 
-完整的使用範例請見 `etl_usage_examples.py` 檔案。
+```python
+from core import ETLContext
+from processors.extract import ExtractProcessor
+
+context = ETLContext()
+extractor = ExtractProcessor(context)
+
+# 並行讀取文件
+combined_data = extractor.process_concurrent(
+    file_paths=['data/file1.xlsx', 'data/file2.xlsx'],
+    max_workers=4,
+    parse_dates=['date']
+)
+```
+
+### 情境2: 讀取與轉換
+
+```python
+from core import ETLContext, ProcessingMode
+from processors.extract import ExtractProcessor
+from processors.transform import TransformProcessor
+from orchestration.orchestrator import ETLOrchestratorWithOutput
+
+context = ETLContext()
+extractor = ExtractProcessor(context)
+transformer = TransformProcessor(context)
+
+orchestrator = ETLOrchestratorWithOutput(
+    context=context,
+    extractor=extractor,
+    transformer=transformer
+)
+
+orchestrator.run(
+    data_dir='data/raw',
+    file_pattern='*.csv',
+    skip_load=True,
+    skip_output=True,
+    transform_params={
+        'num_partitions': 4,
+        'max_workers': 4,
+        'save_transformed': True,
+        'transformed_path': 'data/transformed.csv'
+    }
+)
+```
+
+### 情境3: 完整ETL處理
+
+完整的ETL流程見[快速開始](#快速開始)部分和[會計數據處理](#會計數據處理)部分。
 
 ## 🔍 性能優化建議
 
-1. **I/O密集型處理**：
-   - 對於提取和輸出階段，增加 `max_workers` 參數值以提高並行度
-   - 示例：`extract_params={'max_workers': 8}`
+1. **I/O密集型處理**（提取和輸出階段）:
+   - 增加 `max_workers` 參數值以提高並行度
+   - 範例: `extract_params={'max_workers': 8}`
+   - 使用多線程而非多進程，因為I/O受限操作不受GIL影響
 
-2. **CPU密集型處理**：
-   - 對於轉換階段，設置適當的分區數和工作進程數，通常不超過CPU核心數
-   - 示例：`transform_params={'num_partitions': 4, 'max_workers': 4}`
+2. **CPU密集型處理**（轉換階段）:
+   - 設置合適的分區數和工作進程數，通常不超過CPU核心數
+   - 範例: `transform_params={'num_partitions': 4, 'max_workers': 4}`
+   - 減少分區數量可以降低合併開銷
 
-3. **資源限制情境**：
-   - 在資源受限的環境中，減少 `max_workers` 和 `num_partitions`
-   - 啟用 `enable_auto_optimization=True` 讓框架動態調整
+3. **自動優化**:
+   - 啟用 `enable_auto_optimization=True` 參數
+   - 框架會基於系統資源和數據大小動態調整參數
+   - 動態監控CPU和記憶體使用率
 
-4. **大型數據集**：
+4. **大型數據集**:
    - 增加分區數以減少每個工作進程的記憶體使用
-   - 示例：`transform_params={'num_partitions': 8}`
+   - 範例: `transform_params={'num_partitions': 8}`
+   - 考慮使用Parquet輸出以減少磁盤使用和提高後續讀取速度
+
+## 🔒 併發安全性設計
+
+框架設計上考慮多層次的併發安全性:
+
+1. **文件級鎖定**: 使用`FileLockManager`提供細粒度文件鎖，防止併發寫入衝突
+2. **共享資源保護**: 所有共享狀態操作都使用適當的鎖保護
+3. **線程隔離**: 使用`threading.local()`實現線程特定數據隔離
+4. **計數器安全**: 使用專用鎖保護進度和統計計數器
+5. **跨進程安全**: 針對多進程場景設計的資源分配和初始化機制
+
+## 💾 日誌系統特點
+
+框架包含高級日誌系統:
+
+1. **非阻塞寫入**: 使用隊列處理器將日誌寫入操作移至背景線程
+2. **自動堆疊追蹤**: 增強型`TracebackLogger`自動添加詳細錯誤信息
+3. **全局異常捕獲**: 捕獲並記錄所有未處理的異常，包括子線程異常
+4. **進程感知**: 適當處理多進程環境中的日誌初始化和配置
+5. **按級別鎖定**: 不同日誌級別使用獨立鎖，減少寫入競爭
 
 ## 📄 授權
 
 本專案採用 MIT 授權條款。
+
+## 🙏 致謝
+
+感謝所有貢獻者和測試者。如有問題或建議，請提交 Issue 或 Pull Request。
