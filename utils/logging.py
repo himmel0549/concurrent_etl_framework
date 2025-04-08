@@ -2,6 +2,7 @@
 import logging
 import inspect
 from utils.enhanced_logging import setup_enhanced_logging
+from utils.traceback_logger import get_traceback_logger, setup_global_exception_handler
 
 # 已經設置過日誌的標記
 _logging_setup_done = False
@@ -21,12 +22,16 @@ def setup_logging(level=logging.INFO):
     global _logging_setup_done
     if not _logging_setup_done:
         setup_enhanced_logging()
+        setup_global_exception_handler()  # 設置全局未捕獲例外處理程序
         _logging_setup_done = True
 
 def get_logger(name=None):
     """
-    獲取指定名稱的日誌記錄器
+    獲取指定名稱的日誌記錄器，使用增強型 TracebackLogger
     如果未提供名稱，自動獲取調用者的模組名
+    
+    返回:
+        自動添加 traceback 信息的 logger 實例
     """
     setup_logging()  # 確保日誌已設置
     
@@ -35,4 +40,5 @@ def get_logger(name=None):
         frame = inspect.currentframe().f_back
         name = frame.f_globals.get('__name__', 'root')
     
-    return logging.getLogger(name)
+    # 使用增強型 logger，自動添加 traceback 信息
+    return get_traceback_logger(name)
