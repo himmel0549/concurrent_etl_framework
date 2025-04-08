@@ -86,7 +86,8 @@ class LoadProcessor(ETLProcessor[pd.DataFrame, Dict[str, bool]]):
             
         except Exception as e:
             error_type = type(e).__name__
-            self.context.stats.record_error(error_type)
+            if self.context and hasattr(self.context, 'stats'):
+                self.context.stats.record_error(error_type)
             with log_lock:
                 logger.error(f"處理維度 {dimension} 時發生錯誤: {str(e)}")
             return False

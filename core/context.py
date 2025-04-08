@@ -1,6 +1,7 @@
 from typing import Any
 from utils.logging import get_logger
 
+from core.stats import ETLStats
 
 logger = get_logger(__name__)
 
@@ -9,14 +10,9 @@ class ETLContext:
     def __init__(self, stats=None):
         """
         初始化上下文
-        如果未提供 stats，將使用全局變數
+        如果未提供 stats，使用依賴注入
         """
-        # 延遲導入，避免循環依賴
-        if stats is None:
-            from config.constants import etl_stats
-            self.stats = etl_stats
-        else:
-            self.stats = stats
+        self.stats = stats or ETLStats()
         
         self.config = {}
         self.resources = {}
