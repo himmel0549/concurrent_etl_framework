@@ -11,7 +11,6 @@ import numpy as np
 from utils.logging import get_logger
 from core.interfaces import ETLProcessor
 from core.context import ETLContext
-from config.constants import log_lock
 from utils.resource_manager import ResourceManager
 
 
@@ -188,15 +187,13 @@ class TransformProcessor(ETLProcessor[pd.DataFrame, pd.DataFrame]):
             error_type = type(e).__name__
             if self.context and hasattr(self.context, 'stats'):
                 self.context.stats.record_error(error_type)
-            with log_lock:
-                logger.error(f"轉換數據時發生錯誤: {str(e)}")
+            logger.error(f"轉換數據時發生錯誤: {str(e)}")
             raise
     
     def calculate_optimal_partitions(self, df):
         """根據資料大小動態計算最佳分區數"""
         memory_usage = df.memory_usage(deep=True).sum()
-        with log_lock:
-            logger.info(f"根據資料大小({memory_usage / (1024*1024):.2f}MB)動態調整分區數")
+        logger.info(f"根據資料大小({memory_usage / (1024*1024):.2f}MB)動態調整分區數")
         # 每個分區理想大小約50-100MB
         ideal_partition_size = 75 * 1024 * 1024  # 75MB
         optimal_count = max(1, int(memory_usage / ideal_partition_size))
@@ -223,27 +220,23 @@ class TransformProcessor(ETLProcessor[pd.DataFrame, pd.DataFrame]):
             轉換後的完整DataFrame
         """
         if df is None or len(df) == 0:
-            with log_lock:
-                logger.error("無法轉換: 輸入數據為空")
+            logger.error("無法轉換: 輸入數據為空")
             return pd.DataFrame()
         
         start_time = time.time()
-        with log_lock:
-            logger.info("開始數據轉換")
+        logger.info("開始數據轉換")
         
         # 確定分區數和工作進程數, 如果未提供則自動計算
         if num_partitions is None:
             num_partitions = self.calculate_optimal_partitions(df)
-            with log_lock:
-                logger.info(f"自動設定最佳分區數: {num_partitions}")
+            logger.info(f"自動設定最佳分區數: {num_partitions}")
         if max_workers is None:
             adaptive_workers = self.resource_manager.get_adaptive_workers(
                 task_type='cpu',  # 轉換是CPU密集型
                 min_workers=2,
             )
             max_workers = adaptive_workers
-            with log_lock:
-                logger.info(f"基於系統資源動態設定工作進程數: {max_workers}")
+            logger.info(f"基於系統資源動態設定工作進程數: {max_workers}")
         
         # 從參數中獲取策略類別或使用默認策略
         strategy_class = kwargs.pop('strategy_class', self.strategy_class)
@@ -274,34 +267,29 @@ class TransformProcessor(ETLProcessor[pd.DataFrame, pd.DataFrame]):
                     chunk_result, idx, error_info = future.result()
                     if error_info is None:
                         results.append(chunk_result)
-                        with log_lock:
-                            logger.info(f"完成分區 {idx+1}/{num_partitions} 的轉換")
+                        logger.info(f"完成分區 {idx+1}/{num_partitions} 的轉換")
                     else:
-                        with log_lock:
-                            logger.error(f"處理分區 {idx+1}/{num_partitions} 時出錯:")
-                            logger.error(f"錯誤類型: {error_info['error_type']}")
-                            logger.error(f"錯誤訊息: {error_info['error_message']}")
-                            logger.error(f"堆疊追蹤:\n{error_info['traceback']}")
-                            if 'chunk_shape' in error_info and error_info['chunk_shape']:
-                                logger.error(f"分區資料形狀: {error_info['chunk_shape']}")
-                            if 'chunk_columns' in error_info and error_info['chunk_columns']:
-                                logger.error(f"分區資料欄位: {error_info['chunk_columns']}")
+                        logger.error(f"處理分區 {idx+1}/{num_partitions} 時出錯:")
+                        logger.error(f"錯誤類型: {error_info['error_type']}")
+                        logger.error(f"錯誤訊息: {error_info['error_message']}")
+                        logger.error(f"堆疊追蹤:\n{error_info['traceback']}")
+                        if 'chunk_shape' in error_info and error_info['chunk_shape']:
+                            logger.error(f"分區資料形狀: {error_info['chunk_shape']}")
+                        if 'chunk_columns' in error_info and error_info['chunk_columns']:
+                            logger.error(f"分區資料欄位: {error_info['chunk_columns']}")
                         
                         # 記錄錯誤但在主進程中處理
                         if self.context and hasattr(self.context, 'stats'):
                             self.context.stats.record_error(error_info['error_type'])
                 except Exception as e:
-                    with log_lock:
-                        logger.error(f"處理分區 {chunk_idx+1}/{num_partitions} 時出錯: {str(e)}")
-                        logger.error(f"堆疊追蹤:\n{traceback.format_exc()}")
+                    logger.error(f"處理分區 {chunk_idx+1}/{num_partitions} 時出錯: {str(e)}")
+                    logger.error(f"堆疊追蹤:\n{traceback.format_exc()}")
         
         # 合併轉換後的結果
         if results:
             transformed_data = pd.concat(results, ignore_index=True)
-            with log_lock:
-                logger.info(f"轉換階段完成, 記錄數: {len(transformed_data)}, 耗時: {time.time() - start_time:.2f}秒")
+            logger.info(f"轉換階段完成, 記錄數: {len(transformed_data)}, 耗時: {time.time() - start_time:.2f}秒")
             return transformed_data
         else:
-            with log_lock:
-                logger.error("轉換階段失敗: 沒有成功轉換任何數據")
+            logger.error("轉換階段失敗: 沒有成功轉換任何數據")
             return pd.DataFrame()

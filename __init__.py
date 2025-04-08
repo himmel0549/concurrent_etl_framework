@@ -8,7 +8,7 @@ from processors import (
 )
 from orchestration import ETLOrchestrator, PerformanceComparator
 from generators import SalesDataGenerator
-from config import etl_stats, file_lock, log_lock
+from config import file_lock, log_lock
 
 # 版本信息
 __version__ = '0.1.0'
@@ -18,5 +18,5 @@ __all__ = [
     'ExtractProcessor', 'TransformProcessor', 'LoadProcessor',
     'ETLOrchestrator', 'PerformanceComparator',
     'SalesDataGenerator',
-    'etl_stats', 'file_lock', 'log_lock'
+    'file_lock', 'log_lock'
 ]

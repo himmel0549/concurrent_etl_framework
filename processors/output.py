@@ -8,7 +8,7 @@ import pandas as pd
 from utils.logging import get_logger
 from core.interfaces import ETLProcessor
 from core.context import ETLContext
-from config.constants import log_lock, file_lock
+from utils.file_lock_manager import file_lock_manager
 from utils.file_utils import detect_file_format  # 引入檔案格式檢測函數
 
 
@@ -51,8 +51,7 @@ class OutputProcessor(ETLProcessor[pd.DataFrame, Dict[str, bool]]):
             # 確保目錄存在
             os.makedirs(os.path.dirname(filename), exist_ok=True)
             
-            with log_lock:
-                logger.info(f"開始輸出文件: {filename}")
+            logger.info(f"開始輸出文件: {filename}")
             
             # 使用檔案格式檢測函數
             format_info = detect_file_format(filename)
@@ -74,13 +73,12 @@ class OutputProcessor(ETLProcessor[pd.DataFrame, Dict[str, bool]]):
                 all_params['index'] = False
             
             # 線程安全的文件寫入
-            with file_lock:
+            with file_lock_manager.get_lock(filename):
                 # 動態調用適當的寫入方法
                 writer = getattr(df, writer_method)
                 writer(filename, **all_params)
             
-            with log_lock:
-                logger.info(f"完成輸出文件: {filename}, 記錄數: {len(df)}")
+            logger.info(f"完成輸出文件: {filename}, 記錄數: {len(df)}")
             
             # 更新統計信息
             if self.context and hasattr(self.context, 'stats'):
@@ -92,8 +90,7 @@ class OutputProcessor(ETLProcessor[pd.DataFrame, Dict[str, bool]]):
             error_type = type(e).__name__
             if self.context and hasattr(self.context, 'stats'):
                 self.context.stats.record_error(error_type)
-            with log_lock:
-                logger.error(f"輸出文件失敗 {filename}: {str(e)}")
+            logger.error(f"輸出文件失敗 {filename}: {str(e)}")
             return False
     
     def process_concurrent(self, 
@@ -114,13 +111,11 @@ class OutputProcessor(ETLProcessor[pd.DataFrame, Dict[str, bool]]):
             各輸出文件處理結果
         """
         if df is None or len(df) == 0:
-            with log_lock:
-                logger.error("無法輸出: 輸入數據為空")
+            logger.error("無法輸出: 輸入數據為空")
             return {}
         
         start_time = time.time()
-        with log_lock:
-            logger.info(f"開始並行輸出 {len(output_configs)} 個文件")
+        logger.info(f"開始並行輸出 {len(output_configs)} 個文件")
         
         results = {}
         
@@ -151,13 +146,11 @@ class OutputProcessor(ETLProcessor[pd.DataFrame, Dict[str, bool]]):
                     result = future.result()
                     results[filename] = result
                 except Exception as e:
-                    with log_lock:
-                        logger.error(f"輸出 {filename} 時出錯: {str(e)}")
+                    logger.error(f"輸出 {filename} 時出錯: {str(e)}")
                     results[filename] = False
         
         success_count = sum(1 for success in results.values() if success)
-        with log_lock:
-            logger.info(f"輸出階段完成, 成功輸出文件數: {success_count}/{len(output_configs)}, "
-                        f"耗時: {time.time() - start_time:.2f}秒")
+        logger.info(f"輸出階段完成, 成功輸出文件數: {success_count}/{len(output_configs)}, "
+                    f"耗時: {time.time() - start_time:.2f}秒")
         
         return results

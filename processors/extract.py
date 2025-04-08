@@ -8,7 +8,6 @@ from utils.logging import get_logger
 from utils.file_utils import detect_file_format
 from core.interfaces import ETLProcessor
 from core.context import ETLContext
-from config.constants import log_lock, file_lock
 
 
 logger = get_logger(__name__)
@@ -46,8 +45,8 @@ class ExtractProcessor(ETLProcessor[str, pd.DataFrame]):
                 file_path = file_info
             else:
                 file_path = file_info['path']
-            with log_lock:
-                logger.info(f"開始讀取文件: {file_path}")
+            
+            logger.info(f"開始讀取文件: {file_path}")
             
             # 使用檔案格式檢測函數
             format_info = detect_file_format(file_path)
@@ -66,15 +65,14 @@ class ExtractProcessor(ETLProcessor[str, pd.DataFrame]):
             # 更新統計信息
             self.context.stats.file_processed(file_path, rows)
             
-            with log_lock:
-                logger.info(f"完成讀取文件: {file_path}, 記錄數: {len(df)}, 處理時間: {processing_time:.2f}秒")
+            logger.info(f"完成讀取文件: {file_path}, 記錄數: {len(df)}, 處理時間: {processing_time:.2f}秒")
             
             return df
         except Exception as e:
             error_type = type(e).__name__
             self.context.stats.record_error(error_type)
-            with log_lock:
-                logger.error(f"讀取文件 {file_path} 時發生錯誤: {str(e)}")
+
+            logger.error(f"讀取文件 {file_path} 時發生錯誤: {str(e)}")
             raise
     
     def process_concurrent(self, file_paths: List[str], max_workers: int = 5, **kwargs) -> pd.DataFrame:
@@ -107,16 +105,13 @@ class ExtractProcessor(ETLProcessor[str, pd.DataFrame]):
                     data = future.result()
                     all_data.append(data)
                 except Exception as e:
-                    with log_lock:
-                        logger.error(f"處理文件 {file_path} 時出錯: {str(e)}")
+                    logger.error(f"處理文件 {file_path} 時出錯: {str(e)}")
         
         # 合併所有數據
         if all_data:
-            with log_lock:
-                logger.info(f"提取階段完成, 成功文件數: {len(all_data)}/{len(file_paths)}, "
-                            f"耗時: {time.time() - start_time:.2f}秒")
+            logger.info(f"提取階段完成, 成功文件數: {len(all_data)}/{len(file_paths)}, "
+                        f"耗時: {time.time() - start_time:.2f}秒")
             return pd.concat(all_data, ignore_index=True)
         else:
-            with log_lock:
-                logger.error("提取階段失敗: 沒有成功讀取任何文件")
+            logger.error("提取階段失敗: 沒有成功讀取任何文件")
             return pd.DataFrame()  # 返回空DataFrame而不是None，保持一致性

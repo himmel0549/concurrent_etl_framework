@@ -13,7 +13,6 @@ from processors.extract import ExtractProcessor
 from processors.transform import TransformProcessor
 from processors.load import LoadProcessor
 from processors.output import OutputProcessor
-from config.constants import log_lock, file_lock
 from utils.resource_manager import ResourceManager
 
 
@@ -68,21 +67,18 @@ class ETLOrchestrator:
             ETL流程是否成功
         """
         total_start_time = time.time()
-        with log_lock:
-            logger.info(f"======= 開始ETL流程 (模式: {processing_mode.value}) =======")
+        logger.info(f"======= 開始ETL流程 (模式: {processing_mode.value}) =======")
         
         # 添加安全檢查
         if self.context is None or self.context.stats is None:
-            with log_lock:
-                logger.error("無法執行ETL流程: context 或 stats 為 None")
+            logger.error("無法執行ETL流程: context 或 stats 為 None")
             return False
         
         # 重置統計信息
         try:
             self.context.reset_stats()
         except Exception as e:
-            with log_lock:
-                logger.error(f"重置統計信息時出錯: {str(e)}")
+            logger.error(f"重置統計信息時出錯: {str(e)}")
         
         # 默認參數初始化
         extract_params = extract_params or {}
@@ -98,8 +94,7 @@ class ETLOrchestrator:
         
         try:
             # 1. 提取階段
-            with log_lock:
-                logger.info("=== 提取階段開始 ===")
+            logger.info("=== 提取階段開始 ===")
             
             # 獲取所有銷售數據文件
             import glob
@@ -120,13 +115,11 @@ class ETLOrchestrator:
                     extracted_data = pd.DataFrame()
             
             if len(extracted_data) == 0:
-                with log_lock:
-                    logger.error("提取階段失敗，終止ETL流程")
+                logger.error("提取階段失敗，終止ETL流程")
                 return False
             
             # 2. 轉換階段
-            with log_lock:
-                logger.info("=== 轉換階段開始 ===")
+            logger.info("=== 轉換階段開始 ===")
             
             if processing_mode == ProcessingMode.CONCURRENT:
                 transformed_data = self.transformer.process_concurrent(extracted_data, **transform_params)
@@ -137,8 +130,7 @@ class ETLOrchestrator:
                 
                 transformed_chunks = []
                 for i, chunk in enumerate(df_split):
-                    with log_lock:
-                        logger.info(f"處理分區 {i+1}/{num_partitions}")
+                    logger.info(f"處理分區 {i+1}/{num_partitions}")
                     transformed_chunk = self.transformer.process(chunk, **transform_params)
                     transformed_chunks.append(transformed_chunk)
                 
@@ -148,19 +140,13 @@ class ETLOrchestrator:
                     transformed_data = pd.DataFrame()
             
             if len(transformed_data) == 0:
-                with log_lock:
-                    logger.error("轉換階段失敗，終止ETL流程")
+                logger.error("轉換階段失敗，終止ETL流程")
                 return False
             
             # 保存轉換後的數據
-            if 'save_transformed' in transform_params and transform_params['save_transformed']:
-                save_path = transform_params.get('transformed_path', 'data/processed/all_sales_transformed.csv')
-                with file_lock:
-                    transformed_data.to_csv(save_path, index=False)
             
             # 3. 載入階段
-            with log_lock:
-                logger.info("=== 載入階段開始 ===")
+            logger.info("=== 載入階段開始 ===")
             
             if processing_mode == ProcessingMode.CONCURRENT:
                 results = self.loader.process_concurrent(transformed_data, reports, **load_params)
@@ -183,18 +169,15 @@ class ETLOrchestrator:
                 load_success = any(results.values())
             
             if not load_success:
-                with log_lock:
-                    logger.error("載入階段失敗")
+                logger.error("載入階段失敗")
                 return False
             
             total_time = time.time() - total_start_time
-            with log_lock:
-                logger.info(f"======= ETL流程成功完成，總耗時: {total_time:.2f}秒 =======")
+            logger.info(f"======= ETL流程成功完成，總耗時: {total_time:.2f}秒 =======")
             return True
             
         except Exception as e:
-            with log_lock:
-                logger.error(f"ETL流程執行出錯: {str(e)}")
+            logger.error(f"ETL流程執行出錯: {str(e)}")
             return False
 
 
@@ -226,8 +209,7 @@ class ETLOrchestratorWithOutput(ETLOrchestrator):
     def calculate_optimal_partitions(self, df):
         """根據資料大小動態計算最佳分區數"""
         memory_usage = df.memory_usage(deep=True).sum()
-        with log_lock:
-            logger.info(f"根據資料大小({memory_usage / (1024*1024):.2f}MB)動態調整分區數")
+        logger.info(f"根據資料大小({memory_usage / (1024*1024):.2f}MB)動態調整分區數")
         # 每個分區理想大小約50-100MB
         ideal_partition_size = 75 * 1024 * 1024  # 75MB
         optimal_count = max(1, int(memory_usage / ideal_partition_size))
@@ -260,12 +242,11 @@ class ETLOrchestratorWithOutput(ETLOrchestrator):
             task_type='io', min_workers=1, max_workers=5
         )
         
-        with log_lock:
-            logger.info(f"系統資源狀態: 記憶體使用率 {resources['memory_used_percent']}%, "
-                        f"CPU使用率 {resources['average_cpu']}%")
-            logger.info(f"最佳參數設定: 提取工作線程數 {extract_workers}, "
-                        f"轉換分區數 {optimal_partitions}, 轉換工作進程數 {transform_workers}, "
-                        f"載入/輸出工作線程數 {load_workers}")
+        logger.info(f"系統資源狀態: 記憶體使用率 {resources['memory_used_percent']}%, "
+                    f"CPU使用率 {resources['average_cpu']}%")
+        logger.info(f"最佳參數設定: 提取工作線程數 {extract_workers}, "
+                    f"轉換分區數 {optimal_partitions}, 轉換工作進程數 {transform_workers}, "
+                    f"載入/輸出工作線程數 {load_workers}")
         
         return {
             'max_workers': extract_workers
@@ -324,21 +305,18 @@ class ETLOrchestratorWithOutput(ETLOrchestrator):
         
         # 否則，執行包含輸出階段的完整流程
         total_start_time = time.time()
-        with log_lock:
-            logger.info(f"======= 開始擴展ETL流程 (模式: {processing_mode.value}) =======")
+        logger.info(f"======= 開始擴展ETL流程 (模式: {processing_mode.value}) =======")
         
         # 添加安全檢查
         if self.context is None or self.context.stats is None:
-            with log_lock:
-                logger.error("無法執行ETL流程: context 或 stats 為 None")
+            logger.error("無法執行ETL流程: context 或 stats 為 None")
             return False
         
         # 重置統計信息
         try:
             self.context.reset_stats()
         except Exception as e:
-            with log_lock:
-                logger.error(f"重置統計信息時出錯: {str(e)}")
+            logger.error(f"重置統計信息時出錯: {str(e)}")
         
         # 默認參數初始化
         extract_params = extract_params or {}
@@ -369,14 +347,12 @@ class ETLOrchestratorWithOutput(ETLOrchestrator):
                 output_params = {**opt_load, **(output_params or {})}
                 
             except Exception as e:
-                with log_lock:
-                    logger.error(f"自動優化處理參數失敗：{str(e)}")
-                    logger.error(f"堆疊追蹤：{traceback.format_exc()}")
+                logger.error(f"自動優化處理參數失敗：{str(e)}")
+                logger.error(f"堆疊追蹤：{traceback.format_exc()}")
         
         try:
             # 1. 提取階段
-            with log_lock:
-                logger.info("=== 提取階段開始 ===")
+            logger.info("=== 提取階段開始 ===")
             
             if isinstance(file_pattern, str):
                 # 獲取所有文件
@@ -404,14 +380,12 @@ class ETLOrchestratorWithOutput(ETLOrchestrator):
                     extracted_data = pd.DataFrame()
             
             if len(extracted_data) == 0:
-                with log_lock:
-                    logger.error("提取階段失敗，終止ETL流程")
+                logger.error("提取階段失敗，終止ETL流程")
                 return False
             
             # 2. 轉換階段
             if not skip_transform:
-                with log_lock:
-                    logger.info("=== 轉換階段開始 ===")
+                logger.info("=== 轉換階段開始 ===")
                 
                 if processing_mode == ProcessingMode.CONCURRENT:
                     transformed_data = self.transformer.process_concurrent(extracted_data, **transform_params)
@@ -423,8 +397,7 @@ class ETLOrchestratorWithOutput(ETLOrchestrator):
                     
                     transformed_chunks = []
                     for i, chunk in enumerate(df_split):
-                        with log_lock:
-                            logger.info(f"處理分區 {i+1}/{num_partitions}")
+                        logger.info(f"處理分區 {i+1}/{num_partitions}")
                         transformed_chunk = self.transformer.process(chunk, **transform_params)
                         transformed_chunks.append(transformed_chunk)
                     
@@ -434,15 +407,13 @@ class ETLOrchestratorWithOutput(ETLOrchestrator):
                         transformed_data = pd.DataFrame()
                 
                 if len(transformed_data) == 0:
-                    with log_lock:
-                        logger.error("轉換階段失敗，終止ETL流程")
+                    logger.error("轉換階段失敗，終止ETL流程")
                     return False
             
             # 3. 載入階段 (可跳過)
             load_success = True
             if not skip_load and reports:
-                with log_lock:
-                    logger.info("=== 載入階段開始 ===")
+                logger.info("=== 載入階段開始 ===")
                 
                 if processing_mode == ProcessingMode.CONCURRENT:
                     results = self.loader.process_concurrent(transformed_data, reports, **load_params)
@@ -465,8 +436,7 @@ class ETLOrchestratorWithOutput(ETLOrchestrator):
                     load_success = any(results.values())
                 
                 if not load_success:
-                    with log_lock:
-                        logger.warning("載入階段失敗，但仍繼續執行輸出階段")
+                    logger.warning("載入階段失敗，但仍繼續執行輸出階段")
             
             # 4. 輸出階段 (純輸出，無聚合邏輯)
             output_success = True
@@ -476,8 +446,7 @@ class ETLOrchestratorWithOutput(ETLOrchestrator):
                 transformed_data = extracted_data
             if not skip_output and output_configs:
                 if output_configs:
-                    with log_lock:
-                        logger.info("=== 輸出階段開始 ===")
+                    logger.info("=== 輸出階段開始 ===")
                     
                     if processing_mode == ProcessingMode.CONCURRENT:
                         output_results = self.outputter.process_concurrent(
@@ -500,12 +469,10 @@ class ETLOrchestratorWithOutput(ETLOrchestrator):
                         output_success = any(output_results.values())
                     
                     if not output_success:
-                        with log_lock:
-                            logger.error("輸出階段失敗")
+                        logger.error("輸出階段失敗")
             
             total_time = time.time() - total_start_time
-            with log_lock:
-                logger.info(f"======= 擴展ETL流程完成，總耗時: {total_time:.2f}秒 =======")
+            logger.info(f"======= 擴展ETL流程完成，總耗時: {total_time:.2f}秒 =======")
             
             # 根據執行階段評估整體成功與否
             if skip_load and output_configs:
@@ -516,6 +483,5 @@ class ETLOrchestratorWithOutput(ETLOrchestrator):
                 return load_success  # 沒有輸出配置時，只考慮載入結果
                 
         except Exception as e:
-            with log_lock:
-                logger.error(f"擴展ETL流程執行出錯: {str(e)}")
+            logger.error(f"擴展ETL流程執行出錯: {str(e)}")
             return False

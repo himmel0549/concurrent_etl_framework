@@ -8,7 +8,7 @@ import pandas as pd
 from utils.logging import get_logger
 from core.interfaces import ETLProcessor
 from core.context import ETLContext
-from config.constants import log_lock, file_lock
+from utils.file_lock_manager import file_lock_manager
 
 
 logger = get_logger(__name__)
@@ -45,8 +45,7 @@ class LoadProcessor(ETLProcessor[pd.DataFrame, Dict[str, bool]]):
             是否成功處理
         """
         try:
-            with log_lock:
-                logger.info(f"開始處理維度: {dimension}")
+            logger.info(f"開始處理維度: {dimension}")
             
             # 根據維度選擇分析方式
             # 允許自定義維度
@@ -56,8 +55,7 @@ class LoadProcessor(ETLProcessor[pd.DataFrame, Dict[str, bool]]):
                 agg_df = df.groupby(groupby_cols).agg(agg_dict).reset_index()
             
             else:
-                with log_lock:
-                    logger.error(f"未知的分析維度: {dimension}")
+                logger.error(f"未知的分析維度: {dimension}")
                 return False
             
             # 應用後處理函數
@@ -66,7 +64,7 @@ class LoadProcessor(ETLProcessor[pd.DataFrame, Dict[str, bool]]):
                 agg_df = post_process(agg_df)
             
             # 線程安全的文件寫入
-            with file_lock:
+            with file_lock_manager.get_lock(filename):
                 # 儲存結果
                 if 'write_params' in kwargs:
                     # 自定義寫入參數
@@ -80,16 +78,14 @@ class LoadProcessor(ETLProcessor[pd.DataFrame, Dict[str, bool]]):
                     else:
                         agg_df.to_csv(filename, index=False)
             
-            with log_lock:
-                logger.info(f"完成處理維度: {dimension}, 記錄數: {len(agg_df)}")
+            logger.info(f"完成處理維度: {dimension}, 記錄數: {len(agg_df)}")
             return True
             
         except Exception as e:
             error_type = type(e).__name__
             if self.context and hasattr(self.context, 'stats'):
                 self.context.stats.record_error(error_type)
-            with log_lock:
-                logger.error(f"處理維度 {dimension} 時發生錯誤: {str(e)}")
+            logger.error(f"處理維度 {dimension} 時發生錯誤: {str(e)}")
             return False
     
     def process_concurrent(self, 
@@ -110,13 +106,11 @@ class LoadProcessor(ETLProcessor[pd.DataFrame, Dict[str, bool]]):
             各報表處理結果
         """
         if df is None or len(df) == 0:
-            with log_lock:
-                logger.error("無法載入: 輸入數據為空")
+            logger.error("無法載入: 輸入數據為空")
             return {}
         
         start_time = time.time()
-        with log_lock:
-            logger.info("開始資料加載和報表生成")
+        logger.info("開始資料加載和報表生成")
         
         results = {}
         
@@ -152,13 +146,11 @@ class LoadProcessor(ETLProcessor[pd.DataFrame, Dict[str, bool]]):
                     result = future.result()
                     results[dimension] = result
                 except Exception as e:
-                    with log_lock:
-                        logger.error(f"生成 {dimension} 報表時出錯: {str(e)}")
+                    logger.error(f"生成 {dimension} 報表時出錯: {str(e)}")
                     results[dimension] = False
         
         success_count = sum(1 for success in results.values() if success)
-        with log_lock:
-            logger.info(f"載入階段完成, 成功生成報表數: {success_count}/{len(reports)}, "
-                        f"耗時: {time.time() - start_time:.2f}秒")
+        logger.info(f"載入階段完成, 成功生成報表數: {success_count}/{len(reports)}, "
+                    f"耗時: {time.time() - start_time:.2f}秒")
         
         return results
