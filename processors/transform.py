@@ -8,7 +8,7 @@ from typing import Tuple, Optional, Type
 import pandas as pd
 import numpy as np
 
-from utils.logging import get_logger
+from utils.logging import get_logger, init_worker
 from core.interfaces import ETLProcessor
 from core.context import ETLContext
 from utils.resource_manager import ResourceManager
@@ -241,32 +241,40 @@ class TransformProcessor(ETLProcessor[pd.DataFrame, pd.DataFrame]):
         # 從參數中獲取策略類別或使用默認策略
         strategy_class = kwargs.pop('strategy_class', self.strategy_class)
         
-        # 將數據分割成多個塊
+        # 將數據分割成多個塊，並保留原始索引資訊用於後續合併
         df_split = np.array_split(df, num_partitions)
         
+        # 增強的順序追蹤 - 為每個區塊添加識別索引
+        identified_chunks = [(i, chunk) for i, chunk in enumerate(df_split)]
+        
         # 使用ProcessPoolExecutor處理轉換（計算密集型操作適合多進程）
-        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+        # 使用新的進程初始化器，確保每個工作進程都正確設置日誌和異常處理
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers=max_workers, 
+            initializer=init_worker  # 使用我們的進程初始化器
+        ) as executor:
             # 提交所有分區處理任務，向模組級處理函數傳遞參數
-            future_to_chunk = {
-                executor.submit(
+            futures = []
+            for chunk_idx, chunk in identified_chunks:
+                future = executor.submit(
                     _transform_chunk_worker, 
                     chunk, 
-                    i, 
+                    chunk_idx, 
                     strategy_class,
                     self.processing_factor, 
                     **kwargs
-                ): i 
-                for i, chunk in enumerate(df_split)
-            }
+                )
+                futures.append((future, chunk_idx))
             
-            # 收集結果
-            results = []
-            for future in concurrent.futures.as_completed(future_to_chunk):
-                chunk_idx = future_to_chunk[future]
+            # 收集結果，按原始索引排序
+            results_by_index = {}
+            
+            for future, chunk_idx in futures:
                 try:
                     chunk_result, idx, error_info = future.result()
                     if error_info is None:
-                        results.append(chunk_result)
+                        # 存儲結果和原始索引用於正確排序
+                        results_by_index[idx] = chunk_result
                         logger.info(f"完成分區 {idx+1}/{num_partitions} 的轉換")
                     else:
                         logger.error(f"處理分區 {idx+1}/{num_partitions} 時出錯:")
@@ -283,13 +291,15 @@ class TransformProcessor(ETLProcessor[pd.DataFrame, pd.DataFrame]):
                             self.context.stats.record_error(error_info['error_type'])
                 except Exception as e:
                     logger.error(f"處理分區 {chunk_idx+1}/{num_partitions} 時出錯: {str(e)}")
-                    logger.error(f"堆疊追蹤:\n{traceback.format_exc()}")
         
-        # 合併轉換後的結果
-        if results:
-            transformed_data = pd.concat(results, ignore_index=True)
-            logger.info(f"轉換階段完成, 記錄數: {len(transformed_data)}, 耗時: {time.time() - start_time:.2f}秒")
-            return transformed_data
-        else:
-            logger.error("轉換階段失敗: 沒有成功轉換任何數據")
-            return pd.DataFrame()
+        # 按原始順序合併轉換後的結果
+        if results_by_index:
+            # 按索引順序排序結果
+            sorted_results = [results_by_index[i] for i in range(num_partitions) if i in results_by_index]
+            if sorted_results:
+                transformed_data = pd.concat(sorted_results, ignore_index=True)
+                logger.info(f"轉換階段完成, 記錄數: {len(transformed_data)}, 耗時: {time.time() - start_time:.2f}秒")
+                return transformed_data
+        
+        logger.error("轉換階段失敗: 沒有成功轉換任何數據")
+        return pd.DataFrame()

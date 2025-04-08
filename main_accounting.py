@@ -160,17 +160,17 @@ def main():
     success = orchestrator.run(
         data_dir='data/accounting/raw',
         # file_pattern='entries_*.xlsx',  # 只處理會計分錄文件
-        # file_pattern='vouchers_*.xlsx',  # 只處理傳票文件
-        file_pattern=['data/accounting/raw/vouchers_A.xlsx', 'data/accounting/raw/vouchers_B.xlsx'],
+        file_pattern='vouchers_*.xlsx',  # 只處理傳票文件
+        # file_pattern=['data/accounting/raw/vouchers_A.xlsx', 'data/accounting/raw/vouchers_B.xlsx'],
         processing_mode=ProcessingMode.CONCURRENT,
         # processing_mode=ProcessingMode.SEQUENTIAL,
         extract_params=extract_params,
         transform_params=transform_params,
-        skip_load=True,
+        skip_load=False,
         load_params=load_params,
         reports=accounting_reports,
-        # output_configs=output_configs,
-        # output_params=output_params,
+        output_configs=output_configs,
+        output_params=output_params,
         enable_auto_optimization=False
     )
     

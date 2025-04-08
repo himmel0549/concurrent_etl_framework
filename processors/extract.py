@@ -1,6 +1,8 @@
-from typing import List
+from typing import List, Dict, Tuple
 import concurrent.futures
 import time
+import traceback
+import threading
 
 import pandas as pd
 
@@ -11,6 +13,9 @@ from core.context import ETLContext
 
 
 logger = get_logger(__name__)
+
+# 線程局部存儲 - 用於在多線程環境中安全地儲存和訪問線程特定數據
+_thread_local = threading.local()
 
 # Extract 階段處理器
 class ExtractProcessor(ETLProcessor[str, pd.DataFrame]):
@@ -28,6 +33,8 @@ class ExtractProcessor(ETLProcessor[str, pd.DataFrame]):
         """
         super().__init__(context)
         self.processing_factor = processing_factor
+        # 用於在多線程環境中保護統計信息更新
+        self._stats_lock = threading.RLock()
     
     def process(self, file_info: str, **kwargs) -> pd.DataFrame:
         """
@@ -40,11 +47,16 @@ class ExtractProcessor(ETLProcessor[str, pd.DataFrame]):
         返回:
             提取的DataFrame
         """
+        file_path = None
         try:
             if isinstance(file_info, str):
                 file_path = file_info
             else:
                 file_path = file_info['path']
+            
+            # 使用線程局部存儲記錄當前處理的文件
+            if not hasattr(_thread_local, 'current_file'):
+                _thread_local.current_file = file_path
             
             logger.info(f"開始讀取文件: {file_path}")
             
@@ -62,18 +74,29 @@ class ExtractProcessor(ETLProcessor[str, pd.DataFrame]):
             processing_time = rows * cols * self.processing_factor
             time.sleep(processing_time)
             
-            # 更新統計信息
-            self.context.stats.file_processed(file_path, rows)
+            # 線程安全地更新統計信息
+            with self._stats_lock:
+                if self.context and hasattr(self.context, 'stats'):
+                    self.context.stats.file_processed(file_path, rows)
             
             logger.info(f"完成讀取文件: {file_path}, 記錄數: {len(df)}, 處理時間: {processing_time:.2f}秒")
             
             return df
         except Exception as e:
+            # 線程安全地記錄錯誤
             error_type = type(e).__name__
-            self.context.stats.record_error(error_type)
+            with self._stats_lock:
+                if self.context and hasattr(self.context, 'stats'):
+                    self.context.stats.record_error(error_type)
 
             logger.error(f"讀取文件 {file_path} 時發生錯誤: {str(e)}")
+            # 提供完整堆疊追蹤
+            logger.error(f"堆疊追蹤:\n{traceback.format_exc()}")
             raise
+        finally:
+            # 清理線程局部變數
+            if hasattr(_thread_local, 'current_file'):
+                delattr(_thread_local, 'current_file')
     
     def process_concurrent(self, file_paths: List[str], max_workers: int = 5, **kwargs) -> pd.DataFrame:
         """
@@ -87,31 +110,103 @@ class ExtractProcessor(ETLProcessor[str, pd.DataFrame]):
         返回:
             合併後的DataFrame
         """
+        if not file_paths:
+            logger.warning("沒有文件需要處理")
+            return pd.DataFrame()
+            
         start_time = time.time()
         all_data = []
+        errors = []
+        
+        # 使用安全字典收集結果，避免並發修改問題
+        results_dict: Dict[str, pd.DataFrame] = {}
+        results_lock = threading.RLock()
+        
+        # 創建任務完成計數器
+        task_counter = {'completed': 0, 'total': len(file_paths)}
+        counter_lock = threading.RLock()
+        
+        def process_file_with_tracking(file_path, **kwargs):
+            """帶有跟踪功能的文件處理函數"""
+            try:
+                result = self.process(file_path, **kwargs)
+                # 線程安全地存儲結果
+                with results_lock:
+                    results_dict[file_path] = result
+                return result
+            except Exception as e:
+                # 記錄詳細錯誤信息
+                error_info = {
+                    'file_path': file_path,
+                    'error_type': type(e).__name__,
+                    'error_msg': str(e),
+                    'traceback': traceback.format_exc()
+                }
+                with results_lock:
+                    errors.append(error_info)
+                raise
+            finally:
+                # 更新進度計數
+                with counter_lock:
+                    task_counter['completed'] += 1
+                    completed = task_counter['completed']
+                    total = task_counter['total']
+                    logger.info(f"進度: {completed}/{total} ({completed*100/total:.1f}%)")
         
         # 使用ThreadPoolExecutor並行讀取文件（I/O密集型操作適合多線程）
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             # 提交所有文件讀取任務
-            future_to_file = {
-                executor.submit(self.process, file_path, **kwargs): file_path 
+            futures = [
+                executor.submit(process_file_with_tracking, file_path, **kwargs)
                 for file_path in file_paths
-            }
+            ]
             
-            # 收集結果 - 使用as_completed可以讓結果盡快處理
-            for future in concurrent.futures.as_completed(future_to_file):
-                file_path = future_to_file[future]
-                try:
-                    data = future.result()
-                    all_data.append(data)
-                except Exception as e:
-                    logger.error(f"處理文件 {file_path} 時出錯: {str(e)}")
+            # 等待所有任務完成
+            concurrent.futures.wait(futures)
+        
+        # 收集並處理所有結果
+        for file_path, result_df in results_dict.items():
+            all_data.append(result_df)
+        
+        # 記錄所有錯誤的詳細信息
+        if errors:
+            logger.error(f"提取過程中發生了 {len(errors)} 個錯誤:")
+            for idx, error in enumerate(errors, 1):
+                logger.error(f"錯誤 {idx}: 文件 {error['file_path']}")
+                logger.error(f"錯誤類型: {error['error_type']}")
+                logger.error(f"錯誤消息: {error['error_msg']}")
+                logger.error(f"堆疊追蹤:\n{error['traceback']}")
         
         # 合併所有數據
         if all_data:
-            logger.info(f"提取階段完成, 成功文件數: {len(all_data)}/{len(file_paths)}, "
-                        f"耗時: {time.time() - start_time:.2f}秒")
-            return pd.concat(all_data, ignore_index=True)
+            total_time = time.time() - start_time
+            success_count = len(all_data)
+            total_count = len(file_paths)
+            success_rate = (success_count / total_count) * 100
+            
+            logger.info(f"提取階段完成, 成功: {success_count}/{total_count} ({success_rate:.1f}%), "
+                      f"總耗時: {total_time:.2f}秒, 平均每文件: {total_time/total_count:.2f}秒")
+            
+            try:
+                # 安全合併數據框
+                return pd.concat(all_data, ignore_index=True)
+            except Exception as e:
+                logger.error(f"合併數據時出錯: {str(e)}")
+                logger.error(f"堆疊追蹤:\n{traceback.format_exc()}")
+                
+                # 嘗試更安全的合併方式
+                logger.info("嘗試逐個合併數據框...")
+                if len(all_data) > 0:
+                    try:
+                        result = all_data[0].copy()
+                        for df in all_data[1:]:
+                            result = pd.concat([result, df], ignore_index=True)
+                        return result
+                    except Exception as e2:
+                        logger.error(f"替代合併方式也失敗: {str(e2)}")
+                
+                # 如果所有嘗試都失敗，返回第一個可用的DataFrame或空DataFrame
+                return all_data[0] if all_data else pd.DataFrame()
         else:
             logger.error("提取階段失敗: 沒有成功讀取任何文件")
             return pd.DataFrame()  # 返回空DataFrame而不是None，保持一致性
