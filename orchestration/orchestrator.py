@@ -390,21 +390,9 @@ class ETLOrchestratorWithOutput(ETLOrchestrator):
                 if processing_mode == ProcessingMode.CONCURRENT:
                     transformed_data = self.transformer.process_concurrent(extracted_data, **transform_params)
                 else:
-                    # 串行處理 - 但仍分塊處理以保持一致性
-                    import numpy as np
-                    num_partitions = transform_params.get('num_partitions', 4)
-                    df_split = np.array_split(extracted_data, num_partitions)
-                    
-                    transformed_chunks = []
-                    for i, chunk in enumerate(df_split):
-                        logger.info(f"處理分區 {i+1}/{num_partitions}")
-                        transformed_chunk = self.transformer.process(chunk, **transform_params)
-                        transformed_chunks.append(transformed_chunk)
-                    
-                    if transformed_chunks:
-                        transformed_data = pd.concat(transformed_chunks, ignore_index=True)
-                    else:
-                        transformed_data = pd.DataFrame()
+                    # 串行處理 - 直接處理整個資料集
+                    logger.info(f"串行處理轉換階段，資料行數: {len(extracted_data)}")
+                    transformed_data = self.transformer.process(extracted_data, **transform_params)
                 
                 if len(transformed_data) == 0:
                     logger.error("轉換階段失敗，終止ETL流程")
@@ -440,7 +428,7 @@ class ETLOrchestratorWithOutput(ETLOrchestrator):
             
             # 4. 輸出階段 (純輸出，無聚合邏輯)
             output_success = True
-            if isinstance(transformed_data, pd.DataFrame):
+            if skip_transform or not isinstance(transformed_data, pd.DataFrame):
                 pass
             else:
                 transformed_data = extracted_data
