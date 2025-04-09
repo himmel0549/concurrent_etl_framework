@@ -15,7 +15,7 @@ from .orchestration import ETLOrchestrator, PerformanceComparator, ETLOrchestrat
 from .generators import SalesDataGenerator, AccountingDataGenerator
 
 # 版本信息
-__version__ = '0.1.0'
+__version__ = '0.1.1'
 
 __all__ = [
     'ProcessingMode', 'ETLContext', 'ETLStats', 'ETLProcessor', 'DataGenerator',

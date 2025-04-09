@@ -28,6 +28,10 @@
 
 ### 安裝
 
+- pip install etl_concurrent_framework
+
+RO
+
 1. 複製儲存庫
 ```bash
 git clone https://github.com/yourusername/etl-concurrent-framework.git
