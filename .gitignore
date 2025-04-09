@@ -14,4 +14,3 @@ concurrency_test.py
 concurrent_module.py
 *.csv
 logs/
-*.txt

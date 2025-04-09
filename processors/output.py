@@ -40,7 +40,7 @@ class OutputProcessor(ETLProcessor[pd.DataFrame, Dict[str, bool]]):
         self._stats_lock = threading.RLock()
     
     def _get_merged_params(self, filename: str, output_specific_params: Dict[str, Any], 
-                          global_params: Dict[str, Any]) -> Dict[str, Any]:
+                           global_params: Dict[str, Any]) -> Dict[str, Any]:
         """
         獲取合併後的參數，處理優先級順序和格式特定參數
         
@@ -73,7 +73,7 @@ class OutputProcessor(ETLProcessor[pd.DataFrame, Dict[str, bool]]):
             return {**output_specific_params, 'index': False}
     
     def _safe_write_file(self, df: pd.DataFrame, filename: str, 
-                        format_info: Dict[str, Any], params: Dict[str, Any]) -> bool:
+                         format_info: Dict[str, Any], params: Dict[str, Any]) -> bool:
         """
         安全地將DataFrame寫入文件
         """

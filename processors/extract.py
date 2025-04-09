@@ -185,7 +185,7 @@ class ExtractProcessor(ETLProcessor[str, pd.DataFrame]):
             success_rate = (success_count / total_count) * 100
             
             logger.info(f"提取階段完成, 成功: {success_count}/{total_count} ({success_rate:.1f}%), "
-                      f"總耗時: {total_time:.2f}秒, 平均每文件: {total_time/total_count:.2f}秒")
+                        f"總耗時: {total_time:.2f}秒, 平均每文件: {total_time/total_count:.2f}秒")
             
             try:
                 # 安全合併數據框

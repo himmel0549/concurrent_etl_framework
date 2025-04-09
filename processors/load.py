@@ -39,7 +39,7 @@ class LoadProcessor(ETLProcessor[pd.DataFrame, Dict[str, bool]]):
         self._stats_lock = threading.RLock()
     
     def _perform_aggregation(self, df: pd.DataFrame, groupby_cols: List[str], 
-                            agg_dict: Dict[str, str], post_process=None) -> Tuple[pd.DataFrame, int]:
+                             agg_dict: Dict[str, str], post_process=None) -> Tuple[pd.DataFrame, int]:
         """
         執行數據聚合操作，提取為獨立方法以便於錯誤追踪
         
